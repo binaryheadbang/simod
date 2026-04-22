@@ -405,7 +405,7 @@ function updateHpsRecord(payload) {
   };
 }
 
-function updateAdminRestrictedRecord(payload) {
+function updateAdminRestrictedRecord(payload, actorEmail) {
   payload = payload || {};
   var packageId = sanitizeText(payload.packageId);
   var files = payload.files || {};
@@ -426,6 +426,7 @@ function updateAdminRestrictedRecord(payload) {
   if (!found.row) throw new Error('Paket HPS tidak ditemukan.');
 
   var row = found.row;
+  var previousStatus = sanitizeText(row[21]).toUpperCase();
   if (hasNoPesananField) {
     row[7] = noPesanan;
   }
@@ -451,6 +452,7 @@ function updateAdminRestrictedRecord(payload) {
   row[22] = new Date();
 
   found.sheet.getRange(found.rowNumber, 1, 1, CONFIG.HPS_HEADERS.length).setValues([row]);
+  createReadyNotificationIfNeeded_(row, previousStatus, actorEmail);
 
   return {
     ok: true,
@@ -515,6 +517,7 @@ function uploadHpsFilesRecord(payload, actorEmail) {
 
   var row = found.row;
   var packageFolder = getPackageFolder(row);
+  var previousStatus = sanitizeText(row[21]).toUpperCase();
 
   Object.keys(CONFIG.FILE_COLUMNS).forEach(function (key) {
     if (!files[key]) return;
@@ -536,6 +539,7 @@ function uploadHpsFilesRecord(payload, actorEmail) {
 
   if (files.hps) {
     createNotification_('USER_HPS_UPLOAD', {
+      audience: 'ADMIN',
       packageId: row[0],
       eventId: row[1],
       eventName: row[2],
@@ -544,11 +548,32 @@ function uploadHpsFilesRecord(payload, actorEmail) {
       message: 'Pengguna mengunggah Dokumen HPS.'
     });
   }
+  createReadyNotificationIfNeeded_(row, previousStatus, sanitizeText(actorEmail) || sanitizeText(row[19]) || 'unknown');
 
   return {
     ok: true,
     hps: mapHpsRow(row)
   };
+}
+
+function createReadyNotificationIfNeeded_(row, previousStatus, actorEmail) {
+  var nextStatus = sanitizeText(row[21]).toUpperCase();
+  var normalizedPreviousStatus = sanitizeText(previousStatus).toUpperCase();
+  if (nextStatus !== 'READY' || normalizedPreviousStatus === 'READY') return;
+
+  var recipientEmail = sanitizeText(row[19]).toLowerCase();
+  if (!recipientEmail) return;
+
+  createNotification_('USER_HPS_READY', {
+    audience: 'USER',
+    recipientEmail: recipientEmail,
+    packageId: row[0],
+    eventId: row[1],
+    eventName: row[2],
+    hpsName: row[4],
+    actorEmail: sanitizeText(actorEmail) || 'system',
+    message: 'HPS "' + sanitizeText(row[4]) + '" sudah berstatus Siap.'
+  });
 }
 
 function findHpsRowByPackageId_(packageId) {

@@ -59,6 +59,8 @@ const CONFIG = {
   NOTIFICATION_HEADERS: [
     'NotificationId',
     'Type',
+    'Audience',
+    'RecipientEmail',
     'PackageId',
     'EventId',
     'EventName',

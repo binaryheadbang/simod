@@ -628,6 +628,68 @@
         font-size: 13px;
       }
 
+      .bell-btn {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        padding: 0;
+        font-size: 18px;
+        line-height: 1;
+      }
+
+      .bell-badge {
+        position: absolute;
+        top: -4px;
+        right: -2px;
+        min-width: 20px;
+        height: 20px;
+        padding: 0 6px;
+        border-radius: 999px;
+        background: var(--danger);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid rgba(255, 255, 255, 0.95);
+      }
+
+      .notification-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .notification-item {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        background: linear-gradient(180deg, rgba(239, 248, 243, 0.96), rgba(255, 255, 255, 0.98));
+      }
+
+      .notification-item.unread {
+        border-color: rgba(47, 125, 103, 0.34);
+        box-shadow: inset 0 0 0 1px rgba(47, 125, 103, 0.08);
+      }
+
+      .notification-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+
+      .notification-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 8px;
+      }
+
       .auth-actions {
         display: flex;
         flex-wrap: wrap;
@@ -663,6 +725,10 @@
         </div>
         <div class="nav">
           <a href="<?= adminUiUrl ?>" target="_top" rel="noopener noreferrer">Halaman Admin</a>
+          <button class="btn bell-btn" id="openNotificationsBtn" type="button" title="Notifikasi" aria-label="Notifikasi" style="display:none;">
+            <span aria-hidden="true">🔔</span>
+            <span class="bell-badge" id="notificationBadge" style="display:none;">0</span>
+          </button>
           <button class="btn alt" id="logoutBtn" type="button" style="display:none;">Keluar</button>
           <div class="profile-chip" id="profileChip" style="display:none;">
             <span id="profileEmail">-</span>
@@ -796,6 +862,20 @@
       </div>
     </div>
 
+    <div class="modal-shell" id="notificationsModal" aria-hidden="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="notificationsModalTitle">
+        <div class="modal-header">
+          <div>
+            <h2 class="modal-title" id="notificationsModalTitle">Notifikasi</h2>
+            <p class="modal-note">Pemberitahuan akan muncul saat HPS Anda sudah berstatus Siap.</p>
+          </div>
+          <button class="btn modal-close" id="closeNotificationsBtn" type="button">Tutup</button>
+        </div>
+        <div id="notificationsSummary" class="hint" style="margin-bottom:12px;">Belum ada notifikasi.</div>
+        <div class="notification-list" id="notificationsWrap"></div>
+      </div>
+    </div>
+
     <script>
       let allEvents = [];
       let allPackages = [];
@@ -803,9 +883,13 @@
       let editingPackageId = "";
       let sessionToken = "";
       let currentProfile = null;
+      let notifications = [];
+      let notificationPollHandle = null;
       let userEventVisibleCount = 5;
+      let notificationsVisibleCount = 5;
       let userEventSearch = "";
       const USER_EVENT_BATCH_SIZE = 5;
+      const USER_NOTIFICATION_BATCH_SIZE = 5;
 
       document.getElementById("createHpsBtn").addEventListener("click", handleCreateHps);
       document.getElementById("uploadFilesBtn").addEventListener("click", handleUploadFiles);
@@ -822,8 +906,11 @@
       document.getElementById("startSessionBtn").addEventListener("click", startUserSession);
       document.getElementById("requestAccessBtn").addEventListener("click", requestAccess);
       document.getElementById("logoutBtn").addEventListener("click", logoutUser);
+      document.getElementById("openNotificationsBtn").addEventListener("click", openNotificationsModal);
+      document.getElementById("closeNotificationsBtn").addEventListener("click", closeNotificationsModal);
       document.getElementById("createHpsModal").addEventListener("click", handleModalBackdropClick);
       document.getElementById("uploadFilesModal").addEventListener("click", handleModalBackdropClick);
+      document.getElementById("notificationsModal").addEventListener("click", handleModalBackdropClick);
       document.addEventListener("keydown", handleGlobalKeydown);
 
       bootAuth();
@@ -851,6 +938,7 @@
             sessionStorage.removeItem("simod_user_session");
             sessionToken = "";
             currentProfile = null;
+            stopNotificationPolling_();
             updateProfileChip_();
             setAuthState(
               "Masukkan email untuk melanjutkan",
@@ -906,6 +994,8 @@
             setTopMessage(data.warning || "", !!data.warning);
             allEvents = data.events || [];
             allPackages = data.packages || [];
+            notifications = data.notifications || [];
+            renderNotifications(notifications, data.unreadNotificationCount || 0);
             syncUiFromState(data.stats || null);
           })
           .withFailureHandler(showTopError)
@@ -1075,6 +1165,11 @@
 
         if (event.target.id === "uploadFilesModal") {
           closeUploadModal();
+          return;
+        }
+
+        if (event.target.id === "notificationsModal") {
+          closeNotificationsModal();
         }
       }
 
@@ -1082,12 +1177,23 @@
         if (event.key !== "Escape") return;
         closeCreateHpsModal();
         closeUploadModal();
+        closeNotificationsModal();
       }
 
       function setModalOpen_(modalId, isOpen) {
         const modal = document.getElementById(modalId);
         modal.classList.toggle("open", isOpen);
         modal.setAttribute("aria-hidden", isOpen ? "false" : "true");
+      }
+
+      function openNotificationsModal() {
+        renderNotifications(notifications);
+        setModalOpen_("notificationsModal", true);
+        markSeenNotifications_();
+      }
+
+      function closeNotificationsModal() {
+        setModalOpen_("notificationsModal", false);
       }
 
       function renderEventList() {
@@ -1332,6 +1438,7 @@
         if (approved) {
           document.getElementById("authCard").style.display = "none";
           document.getElementById("appShell").style.display = "grid";
+          startNotificationPolling_();
           setTopMessage("Masuk sebagai " + (currentProfile && currentProfile.email ? currentProfile.email : "pengguna terverifikasi") + ".", false);
           refreshData();
           return;
@@ -1339,6 +1446,7 @@
 
         document.getElementById("authCard").style.display = "grid";
         document.getElementById("appShell").style.display = "none";
+        stopNotificationPolling_();
         requestBtn.style.display = access.canRequest ? "inline-flex" : "none";
 
         if (status === "PENDING") {
@@ -1382,16 +1490,19 @@
         const chip = document.getElementById("profileChip");
         const emailEl = document.getElementById("profileEmail");
         const logoutBtn = document.getElementById("logoutBtn");
+        const openNotificationsBtn = document.getElementById("openNotificationsBtn");
 
         if (!currentProfile || !currentProfile.email) {
           chip.style.display = "none";
           logoutBtn.style.display = "none";
+          openNotificationsBtn.style.display = "none";
           return;
         }
 
         emailEl.textContent = currentProfile.email;
         chip.style.display = "inline-flex";
         logoutBtn.style.display = "inline-flex";
+        openNotificationsBtn.style.display = "inline-flex";
       }
 
       function logoutUser() {
@@ -1400,10 +1511,13 @@
         currentProfile = null;
         allEvents = [];
         allPackages = [];
+        notifications = [];
         selectedEventId = "";
         editingPackageId = "";
         userEventSearch = "";
         userEventVisibleCount = USER_EVENT_BATCH_SIZE;
+        notificationsVisibleCount = USER_NOTIFICATION_BATCH_SIZE;
+        stopNotificationPolling_();
         document.getElementById("authEmailInput").value = "";
         document.getElementById("authNameInput").value = "";
         document.getElementById("requestAccessBtn").style.display = "none";
@@ -1411,15 +1525,19 @@
         document.getElementById("appShell").style.display = "none";
         document.getElementById("eventList").innerHTML = "";
         document.getElementById("tableWrap").innerHTML = "";
+        document.getElementById("notificationsWrap").innerHTML = "";
+        document.getElementById("notificationsSummary").textContent = "Belum ada notifikasi.";
         document.getElementById("eventSearchInput").value = "";
         document.getElementById("searchInput").value = "";
         document.getElementById("statusFilter").value = "ALL";
         setModalOpen_("createHpsModal", false);
         setModalOpen_("uploadFilesModal", false);
+        setModalOpen_("notificationsModal", false);
         updateProfileChip_();
         syncUiFromState({ totalEvents: 0, totalHps: 0, readyHps: 0, draftHps: 0 });
         renderSelectedEventLabel();
         renderHpsSelect();
+        renderNotifications([], 0);
         setAuthState(
           "Masukkan email untuk melanjutkan",
           "Gunakan email yang akan dipakai untuk akses. Jika belum disetujui, kirim permintaan akses.",
@@ -1558,6 +1676,116 @@
             </div>
           </div>
         `;
+      }
+
+      function renderNotifications(nextNotifications, unreadCount) {
+        if (Array.isArray(nextNotifications)) {
+          notifications = nextNotifications.slice();
+        }
+
+        const wrap = document.getElementById("notificationsWrap");
+        const summary = document.getElementById("notificationsSummary");
+        const badge = document.getElementById("notificationBadge");
+        const openBtn = document.getElementById("openNotificationsBtn");
+        const effectiveUnread = typeof unreadCount === "number"
+          ? unreadCount
+          : notifications.filter((item) => !item.isRead).length;
+
+        openBtn.style.display = sessionToken ? "inline-flex" : "none";
+        if (effectiveUnread > 0) {
+          badge.textContent = effectiveUnread > 99 ? "99+" : String(effectiveUnread);
+          badge.style.display = "inline-flex";
+        } else {
+          badge.style.display = "none";
+        }
+
+        summary.textContent = effectiveUnread
+          ? effectiveUnread + " notifikasi belum dibaca."
+          : "Tidak ada notifikasi baru.";
+
+        if (!notifications.length) {
+          wrap.innerHTML = '<div class="empty">Belum ada notifikasi.</div>';
+          return;
+        }
+
+        const visibleState = buildVisibleItems_(notifications, notificationsVisibleCount, USER_NOTIFICATION_BATCH_SIZE);
+        notificationsVisibleCount = visibleState.visibleCount;
+
+        wrap.innerHTML = visibleState.items
+          .map((item) => `
+            <div class="notification-item ${item.isRead ? "" : "unread"}">
+              <div class="notification-head">
+                <strong>${escapeHtml(item.message || "Notifikasi")}</strong>
+                <span class="status ${item.isRead ? "ready" : "draft"}">${escapeHtml(item.isRead ? "Sudah Dibaca" : "Baru")}</span>
+              </div>
+              <div class="hint">${escapeHtml(item.eventName || "-")} | ${escapeHtml(item.hpsName || "-")}</div>
+              <div class="notification-meta">
+                <span class="hint">Pembaruan: ${escapeHtml(item.actorEmail || "-")}</span>
+                <span class="hint">${escapeHtml(formatDateTime(item.createdAt))}</span>
+              </div>
+            </div>
+          `)
+          .join("") + renderListControls_("showMoreUserNotifications", "resetUserNotifications", visibleState, "notifikasi");
+      }
+
+      function showMoreUserNotifications() {
+        notificationsVisibleCount += USER_NOTIFICATION_BATCH_SIZE;
+        renderNotifications(notifications);
+      }
+      window.showMoreUserNotifications = showMoreUserNotifications;
+
+      function resetUserNotifications() {
+        notificationsVisibleCount = USER_NOTIFICATION_BATCH_SIZE;
+        renderNotifications(notifications);
+      }
+      window.resetUserNotifications = resetUserNotifications;
+
+      function refreshNotifications() {
+        if (!sessionToken) return;
+        google.script.run
+          .withSuccessHandler((result) => {
+            renderNotifications((result && result.notifications) || [], (result && result.unreadCount) || 0);
+            if (isNotificationsModalOpen_()) {
+              markSeenNotifications_();
+            }
+          })
+          .withFailureHandler(() => {})
+          .getUserNotifications(sessionToken);
+      }
+
+      function markSeenNotifications_() {
+        if (!sessionToken) return;
+        const unreadIds = notifications
+          .filter((item) => !item.isRead && item.notificationId)
+          .map((item) => item.notificationId);
+        if (!unreadIds.length) return;
+
+        notifications = notifications.map((item) =>
+          unreadIds.includes(item.notificationId)
+            ? Object.assign({}, item, { isRead: true })
+            : item
+        );
+        renderNotifications(notifications, 0);
+        google.script.run
+          .withFailureHandler(() => {
+            refreshNotifications();
+          })
+          .markUserNotificationsRead(sessionToken, unreadIds);
+      }
+
+      function isNotificationsModalOpen_() {
+        return document.getElementById("notificationsModal").classList.contains("open");
+      }
+
+      function startNotificationPolling_() {
+        stopNotificationPolling_();
+        notificationPollHandle = window.setInterval(refreshNotifications, 20000);
+      }
+
+      function stopNotificationPolling_() {
+        if (!notificationPollHandle) return;
+        window.clearInterval(notificationPollHandle);
+        notificationPollHandle = null;
       }
 
       function getPackagesForSelection_() {
