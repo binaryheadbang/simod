@@ -160,6 +160,13 @@ function getNotificationSheet() {
   return sheet;
 }
 
+function getEmailLogSheet() {
+  var ss = getSpreadsheet();
+  var sheet = ss.getSheetByName(CONFIG.EMAIL_LOG_SHEET_NAME);
+  if (!sheet) sheet = ss.insertSheet(CONFIG.EMAIL_LOG_SHEET_NAME);
+  return sheet;
+}
+
 function ensureSheetHeaders(sheet, headers) {
   var range = sheet.getRange(1, 1, 1, headers.length);
   var current = range.getValues()[0];
@@ -180,6 +187,7 @@ function setupSheets() {
   ensureSheetHeaders(getHpsSheet(), CONFIG.HPS_HEADERS);
   ensureSheetHeaders(getAccessSheet(), CONFIG.ACCESS_HEADERS);
   ensureSheetHeaders(getNotificationSheet(), CONFIG.NOTIFICATION_HEADERS);
+  ensureSheetHeaders(getEmailLogSheet(), CONFIG.EMAIL_LOG_HEADERS);
 }
 
 function listEducationEvents() {
@@ -258,6 +266,7 @@ function addEducationRecord(eventName, actorEmail) {
   ];
 
   getEventSheet().appendRow(row);
+  sendNewEducationAvailableEmails_(row, actorEmail);
 
   return {
     ok: true,
@@ -518,6 +527,9 @@ function uploadHpsFilesRecord(payload, actorEmail) {
   var row = found.row;
   var packageFolder = getPackageFolder(row);
   var previousStatus = sanitizeText(row[21]).toUpperCase();
+  if (!sanitizeText(row[19]) && sanitizeText(actorEmail) && !isAdminEmail_(actorEmail)) {
+    row[19] = sanitizeText(actorEmail).toLowerCase();
+  }
 
   Object.keys(CONFIG.FILE_COLUMNS).forEach(function (key) {
     if (!files[key]) return;
@@ -561,7 +573,7 @@ function createReadyNotificationIfNeeded_(row, previousStatus, actorEmail) {
   var normalizedPreviousStatus = sanitizeText(previousStatus).toUpperCase();
   if (nextStatus !== 'READY' || normalizedPreviousStatus === 'READY') return;
 
-  var recipientEmail = sanitizeText(row[19]).toLowerCase();
+  var recipientEmail = resolveNotificationRecipientEmail_(row, actorEmail);
   if (!recipientEmail) return;
 
   createNotification_('USER_HPS_READY', {
@@ -573,6 +585,49 @@ function createReadyNotificationIfNeeded_(row, previousStatus, actorEmail) {
     hpsName: row[4],
     actorEmail: sanitizeText(actorEmail) || 'system',
     message: 'HPS "' + sanitizeText(row[4]) + '" sudah berstatus Siap.'
+  });
+  sendReadyStatusEmail_(row, recipientEmail, actorEmail);
+}
+
+function resolveNotificationRecipientEmail_(row, actorEmail) {
+  var ownerEmail = sanitizeText(row[19]).toLowerCase();
+  if (ownerEmail) return ownerEmail;
+
+  var normalizedActorEmail = sanitizeText(actorEmail).toLowerCase();
+  if (normalizedActorEmail && !isAdminEmail_(normalizedActorEmail)) {
+    return normalizedActorEmail;
+  }
+
+  var packageId = sanitizeText(row[0]);
+  if (!packageId) return '';
+
+  return findLatestUserUploadActorByPackageId_(packageId);
+}
+
+function findLatestUserUploadActorByPackageId_(packageId) {
+  setupSheets();
+  var sheet = getNotificationSheet();
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return '';
+
+  var rows = sheet.getRange(2, 1, lastRow - 1, CONFIG.NOTIFICATION_HEADERS.length).getValues();
+  for (var i = rows.length - 1; i >= 0; i--) {
+    var row = rows[i];
+    var type = sanitizeText(row[1]).toUpperCase();
+    var rowPackageId = sanitizeText(row[4]);
+    var actorEmail = sanitizeText(row[8]).toLowerCase();
+    if (type !== 'USER_HPS_UPLOAD') continue;
+    if (rowPackageId !== packageId) continue;
+    if (!actorEmail || isAdminEmail_(actorEmail)) continue;
+    return actorEmail;
+  }
+  return '';
+}
+
+function isAdminEmail_(email) {
+  var normalizedEmail = sanitizeText(email).toLowerCase();
+  return (CONFIG.ADMIN_ALLOWED_EMAILS || []).some(function (candidate) {
+    return sanitizeText(candidate).toLowerCase() === normalizedEmail;
   });
 }
 
